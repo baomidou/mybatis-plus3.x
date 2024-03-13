@@ -36,7 +36,7 @@ public class DefaultIdentifierGenerator implements IdentifierGenerator {
      */
     @Deprecated
     public DefaultIdentifierGenerator() {
-        this.sequence = new Sequence(null);
+        this.sequence = new Sequence((InetAddress)null);
     }
 
     public DefaultIdentifierGenerator(InetAddress inetAddress) {

@@ -21,6 +21,9 @@ import org.apache.ibatis.logging.LogFactory;
 import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -37,7 +40,8 @@ public class Sequence {
     /**
      * 时间起始标记点，作为基准，一般取系统的最近时间（一旦确定不能变动）
      */
-    private static final long twepoch = 1288834974657L;
+    private final long twepoch;
+    private static final long DEFAULT_TWEPOCH=1288834974657L;
     /**
      * 机器标识位数
      */
@@ -75,18 +79,21 @@ public class Sequence {
      * IP 地址
      */
     private InetAddress inetAddress;
+    /**
+     * 最大时间偏移量,并发不大的系统可增大该值,增大时间回滚容错性.
+     */
+    private final long maxTimeOffset;
+    /**
+     * 启用SystemClock功能来获取时间,并发不是极大情况下可关闭此功能,避免频繁线程上下文切换
+     */
+    private final boolean enableSystemClock;
 
-    public Sequence(InetAddress inetAddress) {
-        this.inetAddress = inetAddress;
-        this.datacenterId = getDatacenterId(maxDatacenterId);
-        this.workerId = getMaxWorkerId(datacenterId, maxWorkerId);
-        initLog();
+    public Sequence(){
+        this(null,0,0,null,true,5);
     }
 
-    private void initLog() {
-        if (logger.isDebugEnabled()) {
-            logger.debug("Initialization Sequence datacenterId:" + this.datacenterId + " workerId:" + this.workerId);
-        }
+    public Sequence(InetAddress inetAddress) {
+        this(inetAddress,0,0,null,true,5);
     }
 
     /**
@@ -96,13 +103,60 @@ public class Sequence {
      * @param datacenterId 序列号
      */
     public Sequence(long workerId, long datacenterId) {
-        Assert.isFalse(workerId > maxWorkerId || workerId < 0,
-            String.format("worker Id can't be greater than %d or less than 0", maxWorkerId));
-        Assert.isFalse(datacenterId > maxDatacenterId || datacenterId < 0,
-            String.format("datacenter Id can't be greater than %d or less than 0", maxDatacenterId));
-        this.workerId = workerId;
-        this.datacenterId = datacenterId;
+        this(null,workerId,datacenterId,null,true,5);
+    }
+
+    public Sequence(LocalDateTime startTime) {
+        this(null,0,0,startTime,true,5);
+    }
+
+    public Sequence(LocalDateTime startTime,boolean _enableSystemClock,long _maxTimeOffset) {
+        this(null,0,0,startTime,_enableSystemClock,_maxTimeOffset);
+    }
+    /**
+     * 构造函数
+     * @param workerId 工作机器 ID
+     * @param datacenterId 数据中心ID
+     * @param startTime 启始时间,null使用默认启始时间,默认启动时间2010开始会浪费很多id
+     * @param _enableSystemClock 启用SystemClock功能来获取时间
+     * @param _maxTimeOffset 最大时间容错偏移量
+     */
+    public Sequence(InetAddress inetAddress,long workerId, long datacenterId, LocalDateTime startTime,
+                    boolean _enableSystemClock,long _maxTimeOffset) {
+        enableSystemClock=_enableSystemClock;
+        maxTimeOffset=_maxTimeOffset<=0?5:_maxTimeOffset;
+        if (inetAddress!=null){
+            this.inetAddress=inetAddress;
+        }
+        if(datacenterId<=0){
+            this.datacenterId = getDatacenterId(maxDatacenterId);
+        }else {
+            Assert.isFalse(datacenterId > maxDatacenterId ,
+                String.format("datacenter Id can't be greater than %d", maxDatacenterId));
+            this.datacenterId =datacenterId;
+        }
+        if(workerId<=0){
+            this.workerId = getMaxWorkerId(datacenterId, maxWorkerId);
+        }else {
+            Assert.isFalse(workerId > maxWorkerId,
+                String.format("worker Id can't be greater than %d", maxWorkerId));
+            this.workerId =workerId;
+        }
+
+        if (startTime!=null) {
+            twepoch=startTime.atZone(ZoneId.systemDefault())
+                .toInstant()
+                .toEpochMilli();
+        }else{
+            twepoch=DEFAULT_TWEPOCH;
+        }
         initLog();
+    }
+
+    private void initLog() {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Initialization Sequence datacenterId:" + this.datacenterId + " workerId:" + this.workerId);
+        }
     }
 
     /**
@@ -159,7 +213,7 @@ public class Sequence {
         //闰秒
         if (timestamp < lastTimestamp) {
             long offset = lastTimestamp - timestamp;
-            if (offset <= 5) {
+            if (offset <= maxTimeOffset) {
                 try {
                     wait(offset << 1);
                     timestamp = timeGen();
@@ -182,8 +236,8 @@ public class Sequence {
                 timestamp = tilNextMillis(lastTimestamp);
             }
         } else {
-            // 不同毫秒内，序列号置为 1 - 2 随机数
-            sequence = ThreadLocalRandom.current().nextLong(1, 3);
+            // 不同毫秒内，序列号置为 1 - 9 随机数
+            sequence = ThreadLocalRandom.current().nextLong(1, 9);
         }
 
         lastTimestamp = timestamp;
@@ -204,13 +258,13 @@ public class Sequence {
     }
 
     protected long timeGen() {
-        return SystemClock.now();
+        return enableSystemClock? SystemClock.now():System.currentTimeMillis();
     }
 
     /**
      * 反解id的时间戳部分
      */
-    public static long parseIdTimestamp(long id) {
+    public long parseIdTimestamp(long id) {
         return (id>>22)+twepoch;
     }
 }
